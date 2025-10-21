@@ -1,15 +1,17 @@
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from dotenv import load_dotenv
+import os, sys
 from src.influx.connection import get_influx_client
 from src.influx.query_builder import build_query
 from src.influx.extractor import extract_data
 from src.storage.file_writer import save_to_csv, save_to_parquet
-from datetime import datetime, timedelta
+import pandas as pd
 
+import re
 
-load_dotenv()
+def sanitize_device_id(device_id):
+    # Remove protocolo e substitui caracteres problemáticos por underscore
+    safe_id = re.sub(r'^https?://', '', device_id)           # remove http:// ou https://
+    safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '_', safe_id)        # substitui caracteres inválidos
+    return safe_id
 
 def run_pipeline(measurement, deviceId, start, end, fmt="csv", output_path=None):
     client = get_influx_client()
@@ -17,25 +19,57 @@ def run_pipeline(measurement, deviceId, start, end, fmt="csv", output_path=None)
     df = extract_data(client, query)
 
     if df.empty:
-        print(" Nenhum dado retornado.")
+        print(f" Nenhum dado retornado para {measurement} / {deviceId} entre {start} e {end}")
         return
 
-    if not output_path:
-        now = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        output_path = f"data/raw/influx_dump_{now}.{fmt}"
+    df['time'] = pd.to_datetime(df['time'])
+    
+    # Adicionando colunas auxiliares para particionamento
+    df['year'] = df['time'].dt.year
+    df['month'] = df['time'].dt.month
+
+    for (year, month), group_df in df.groupby(['year', 'month']):
+        safe_device_id = sanitize_device_id(deviceId)
+        dir_path = f"data/raw/{measurement}/{safe_device_id}/year={year}/month={month:02d}/"
+        os.makedirs(dir_path, exist_ok=True)
+
+        file_name = f"{measurement}_{safe_device_id}_{year}{month:02d}.{fmt}"
+        file_path = os.path.join(dir_path, file_name)
         
-    if fmt == "parquet":
-        save_to_parquet(df, output_path)
-    elif fmt == "csv":
-        save_to_csv(df, output_path)
-    else:
-        raise ValueError(f"Formato não suportado: {fmt}")
+        if fmt == "parquet":
+            save_to_parquet(group_df.drop(columns=['year', 'month']), file_path)
+        elif fmt == "csv":
+            save_to_csv(group_df.drop(columns=['year', 'month']), file_path)
+        else:
+            raise ValueError(f"Formato não suportado: {fmt}")
 
-    print(f" Dados salvos em: {output_path}")
+        print(f" {measurement}/{deviceId} ({year}-{month:02d}): {len(group_df)} registros salvos em {file_path}")
 
-try:
-    # https://react2020.eu/device/VIC-GXHQ20503L3SA-1,2022-02-24T14:13:10.050000Z,2025-10-21T17:07:50.014000Z
-    run_pipeline("nCycles","https://react2020.eu/device/VIC-GXHQ20503L3SA-1", "2022-02-24T14:13:10.050000Z", "2022-02-25T14:13:10.050000Z")
-except Exception as e:
-    print(f" Erro ao executar o pipeline: {e}")
-    sys.exit(1)
+
+def run_from_control(csv_path="data/exports/time_bounds.csv"):
+    df = pd.read_csv(csv_path, parse_dates=["time_min", "time_max"])
+    
+    for _, row in df.iterrows():
+        measurement = row["measurement"]
+        deviceId = row["deviceId"]
+        start = pd.to_datetime(row["time_min"]).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = pd.to_datetime(row["time_max"]).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # print(f"Measurement: {measurement}, DeviceId: {device_id}, Start: {start}, End: {end}")
+
+        try:
+            run_pipeline(
+            measurement=measurement,
+            deviceId=deviceId,
+            start=start,
+            end=end,
+            fmt="csv",
+            output_path=None  
+            )
+        except Exception as e:
+            print(f" Erro ao executar o pipeline: {e}")
+            sys.exit(1)
+
+if __name__ == "__main__":
+    run_from_control()
+
