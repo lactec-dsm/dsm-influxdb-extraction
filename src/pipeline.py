@@ -13,7 +13,7 @@ def sanitize_device_id(device_id):
     safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '_', safe_id)        # substitui caracteres inválidos
     return safe_id
 
-def run_pipeline(measurement, deviceId, start, end, fmt="csv", output_path=None):
+def run_pipeline(measurement, deviceId, unit, start, end, fmt="csv", output_path=None):
     client = get_influx_client()
     query = build_query(measurement, deviceId, start, end)
     df = extract_data(client, query)
@@ -22,7 +22,10 @@ def run_pipeline(measurement, deviceId, start, end, fmt="csv", output_path=None)
         print(f" Nenhum dado retornado para {measurement} / {deviceId} entre {start} e {end}")
         return
 
-    df['time'] = pd.to_datetime(df['time'])
+    df['unit'] = unit
+    
+    df['time'] = pd.to_datetime(df['time'], format='ISO8601', errors='coerce')
+    df = df.dropna(subset=['time'])
     
     # Adicionando colunas auxiliares para particionamento
     df['year'] = df['time'].dt.year
@@ -52,15 +55,17 @@ def run_from_control(csv_path="data/exports/time_bounds.csv"):
     for _, row in df.iterrows():
         measurement = row["measurement"]
         deviceId = row["deviceId"]
-        start = pd.to_datetime(row["time_min"]).strftime("%Y-%m-%dT%H:%M:%SZ")
-        end = pd.to_datetime(row["time_max"]).strftime("%Y-%m-%dT%H:%M:%SZ")
+        unit = str(row["unit"])
+        start =  pd.to_datetime(row["time_min"]).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = pd.to_datetime(row["time_max"]).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # print(f"Measurement: {measurement}, DeviceId: {device_id}, Start: {start}, End: {end}")
+        #print(f"Measurement: {measurement}, DeviceId: {deviceId}, Unit: {unit}, Start: {start}, End: {end}")
 
         try:
             run_pipeline(
             measurement=measurement,
             deviceId=deviceId,
+            unit=unit,
             start=start,
             end=end,
             fmt="csv",

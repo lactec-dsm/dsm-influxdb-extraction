@@ -2,11 +2,11 @@ import os
 import pandas as pd
 from src.influx.connection import get_influx_client
 
-def get_time_bounds(measurements, device_ids, field="value"):
+def get_time_bounds(measurements, device_ids, units, field="value"):
     client = get_influx_client()
     rows = []
 
-    for measurement, device_id in zip(measurements, device_ids):
+    for measurement, device_id, unit in zip(measurements, device_ids, units):
         query_min = (
             f'SELECT first("{field}") AS first_val '
             f'FROM "{measurement}" '
@@ -35,6 +35,7 @@ def get_time_bounds(measurements, device_ids, field="value"):
         rows.append({
             "measurement": measurement,
             "deviceId": device_id,
+            "unit": unit,
             "time_min": time_min,
             "time_max": time_max
         })
@@ -42,8 +43,8 @@ def get_time_bounds(measurements, device_ids, field="value"):
     return rows
 
 
-def export_time_bounds(measurements, device_ids, output_path):
-    bounds = get_time_bounds(measurements, device_ids)
+def export_time_bounds(measurements, device_ids, units, output_path):
+    bounds = get_time_bounds(measurements, device_ids, units)
     df = pd.DataFrame(bounds)
 
     if df.empty:
@@ -56,7 +57,7 @@ def export_time_bounds(measurements, device_ids, output_path):
 
 if __name__ == "__main__":
     measurements = ["stateBat", 
-                    "elnBat", 
+                    "eInBat", 
                     "eOutBat",
                     "iBat",
                     "nCycles",
@@ -74,7 +75,17 @@ if __name__ == "__main__":
                   "https://react2020.eu/device/VIC-GXHQ20503L3SA-1",
                   "https://react2020.eu/device/VIC-GXHQ20503L3SA-1",
                   "https://react2020.eu/device/VIC-GXHQ20503L3SA-1"]
+
+    units = ["", 
+            "Wh",
+            "Wh",
+            "A",
+            "",
+            "",
+            "",
+            "DEG_C",
+            "V"]
     
     output_path = "data/exports/time_bounds.csv"
 
-    export_time_bounds(measurements, device_ids, output_path)
+    export_time_bounds(measurements, device_ids, units, output_path)
