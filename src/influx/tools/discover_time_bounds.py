@@ -1,87 +1,77 @@
 import os
 import pandas as pd
-
 from src.influx.connection import get_influx_client
-
 
 PLAN_PATH = "data/exports/extraction_plan.csv"
 OUTPUT_PATH = "data/exports/measurement_time_bounds.csv"
 
 
-def read_plan_csv(path: str) -> pd.DataFrame:
+def read_csv_flexible(path: str, nrows: int | None = None) -> pd.DataFrame:
     """
-    Lê o extraction_plan.csv tentando vírgula e ponto-e-vírgula.
+    Lê CSV tentando vírgula e ponto-e-vírgula.
+    Permite limitar a quantidade de linhas lidas com nrows.
     """
-    df = pd.read_csv(path)
+    df = pd.read_csv(path, nrows=nrows)
 
     if "measurement_id" in df.columns:
         return df
 
-    df = pd.read_csv(path, sep=";")
+    df = pd.read_csv(path, sep=";", nrows=nrows)
 
     if "measurement_id" in df.columns:
         return df
 
     raise ValueError(
-        "Não foi possível encontrar a coluna 'measurement_id' no extraction_plan.csv. "
+        f"Nao foi possivel identificar as colunas esperadas no arquivo {path}. "
         f"Colunas encontradas: {list(df.columns)}"
     )
 
-
-def build_min_max_query(measurement_id: str, device_id: str) -> str:
+def build_device_tag(device_id: str) -> str:
     """
-    Monta a query para descobrir o menor e maior timestamp disponíveis.
+    Monta o valor da tag deviceId no formato esperado pelo Influx.
+    Se já vier em formato URL, mantém.
     """
-    return f"""
-    SELECT
-        FIRST(value) AS first_value,
-        LAST(value) AS last_value
-    FROM "{measurement_id}"
-    WHERE "deviceId" = '{device_id}'
-    """
+    device_id = str(device_id).strip()
+
+    if device_id.startswith("https://react2020.eu/device/"):
+        return device_id
+
+    return f"https://react2020.eu/device/{device_id}"
 
 
-def discover_time_bounds() -> None:
+def get_time_bounds_from_plan(plan_df: pd.DataFrame, field: str = "value") -> list[dict]:
     client = get_influx_client()
-    plan = read_plan_csv(PLAN_PATH)
+    rows = []
 
-    expected_columns = {"measurement_id", "device_id", "unit"}
-    missing = expected_columns.difference(plan.columns)
-
-    if missing:
-        raise ValueError(f"Colunas ausentes no extraction_plan.csv: {sorted(missing)}")
-
-    # Remove duplicidades para não consultar o mesmo par várias vezes
-    plan_unique = (
-        plan[["measurement_id", "device_id", "unit"]]
+    # remove duplicidade para não consultar a mesma combinação várias vezes
+    plan_df = (
+        plan_df[["measurement_id", "device_id", "unit"]]
         .drop_duplicates()
         .reset_index(drop=True)
     )
 
-    results = []
-
-    for _, row in plan_unique.iterrows():
-        measurement_id = str(row["measurement_id"]).strip()
-        device_id = str(row["device_id"]).strip()
+    for _, row in plan_df.iterrows():
+        measurement = str(row["measurement_id"]).strip()
+        device_id_raw = str(row["device_id"]).strip()
+        device_tag = build_device_tag(device_id_raw)
+        #print(measurement)
+        #print(device_id_raw)
+        #print(device_tag)
         unit = "" if pd.isna(row["unit"]) else str(row["unit"]).strip()
 
-        print(f"[RUN] {measurement_id} / {device_id}")
+        query_min = (
+            f'SELECT first("{field}") AS first_val '
+            f'FROM "{measurement}" '
+            f'WHERE "deviceId" = \'{device_tag}\''
+        )
 
-        # menor data
-        query_min = f'''
-        SELECT * FROM "{measurement_id}"
-        WHERE "deviceId" = '{device_id}'
-        ORDER BY time ASC
-        LIMIT 1
-        '''
+        query_max = (
+             f'SELECT last("{field}") AS last_val '
+             f'FROM "{measurement}" '
+             f'WHERE "deviceId" = \'{device_tag}\''
+        )
 
-        # maior data
-        query_max = f'''
-        SELECT * FROM "{measurement_id}"
-        WHERE "deviceId" = '{device_id}'
-        ORDER BY time DESC
-        LIMIT 1
-        '''
+        print(f"[RUN] measurement={measurement} / deviceId={device_tag}")
 
         result_min = client.query(query_min)
         result_max = client.query(query_max)
@@ -89,26 +79,38 @@ def discover_time_bounds() -> None:
         points_min = list(result_min.get_points())
         points_max = list(result_max.get_points())
 
-        time_min = points_min[0]["time"] if points_min else None
-        time_max = points_max[0]["time"] if points_max else None
+        if not points_min or not points_max:
+             print(f"[INFO] Nenhum dado para {measurement} / {device_tag}")
+             rows.append({
+                 "measurement_id": measurement,
+                 "device_id": device_id_raw,
+                 "device_tag": device_tag,
+                 "unit": unit,
+                 "time_min": None,
+                 "time_max": None
+             })
+             continue
 
-        results.append(
-            {
-                "measurement_id": measurement_id,
-                "device_id": device_id,
-                "unit": unit,
-                "time_min": time_min,
-                "time_max": time_max,
-            }
-        )
+        time_min = points_min[0].get("time")
+        time_max = points_max[0].get("time")
 
-    df_out = pd.DataFrame(results)
+        rows.append({
+             "measurement_id": measurement,
+             "device_id": device_id_raw,
+             "device_tag": device_tag,
+             "unit": unit,
+             "time_min": time_min,
+             "time_max": time_max
+         })
 
-    os.makedirs("data/exports", exist_ok=True)
+    return rows
+
+def export_time_bounds():
+    plan_df = read_csv_flexible(PLAN_PATH, nrows=50)
+    bounds = get_time_bounds_from_plan(plan_df, field="value")
+    df_out = pd.DataFrame(bounds)
     df_out.to_csv(OUTPUT_PATH, index=False)
-
     print(f"\n[OK] Arquivo salvo em: {OUTPUT_PATH}")
 
-
 if __name__ == "__main__":
-    discover_time_bounds()
+    export_time_bounds()
