@@ -1,11 +1,12 @@
-import os, sys
+import os, sys, re
+import pandas as pd
+
 from src.influx.connection import get_influx_client
 from src.influx.query_builder import build_query
 from src.influx.extractor import extract_data
 from src.storage.file_writer import save_to_csv, save_to_parquet
-import pandas as pd
 
-import re
+EXTRACTION_PLAN_PATH = "data/exports/extraction_plan.csv"
 
 def sanitize_device_id(device_id):
     # Remove protocolo e substitui caracteres problemáticos por underscore
@@ -13,68 +14,144 @@ def sanitize_device_id(device_id):
     safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '_', safe_id)        # substitui caracteres inválidos
     return safe_id
 
-def run_pipeline(measurement, deviceId, unit, start, end, fmt="csv", output_path=None):
+def normalize_bool(value) -> bool:
+    if pd.isna(value):
+        return False
+
+    value_str = str(value).strip().lower()
+    if value_str in {'true', '1', 'yes', 'y'}:
+        return True
+    
+    if value_str in {'false', '0', 'no', 'n'}:
+        return False
+    
+    raise ValueError(f"Valor booleano active: {value}")
+
+def read_csv_flexible(path: str) -> pd.DataFrame:
+    """
+    Lê CSV tentando primeiro vírgula e depois ponto-e-vírgula.
+    """
+    df_comma = pd.read_csv(path)
+
+    if "measurement_id" in df_comma.columns:
+        return df_comma
+
+    df_semicolon = pd.read_csv(path, sep=";")
+
+    if "measurement_id" in df_semicolon.columns:
+        return df_semicolon
+
+    raise ValueError(
+        "Nao foi possivel identificar o separador do extraction_plan.csv.\n"
+        f"Colunas encontradas com virgula: {list(df_comma.columns)}\n"
+        f"Colunas encontradas com ponto-e-virgula: {list(df_semicolon.columns)}"
+    )
+
+def validate_plan(df: pd.DataFrame) -> None:
+    expected_columns = {"active", "measurement_id", "device_id", "unit", "time_min", "time_max", "output_format"}
+
+    missing_columns = expected_columns.difference(df.columns)
+    if missing_columns:
+        raise ValueError(f"Colunas faltando no plano de extração: {sorted(missing_columns)}"
+                         f"\nColunas encontradas: {sorted(df.columns)}"
+                         )
+def build_device_tag(device_id: str) -> str:
+    device_id = str(device_id).strip()
+    
+    if device_id.startswith("https://react2020.eu/device/"):
+        return device_id
+    
+    return f"https://react2020.eu/device/{device_id}"
+
+
+def run_pipeline(measurement_id: str, device_id: str, unit: str, start: str, end: str, fmt: str = "csv") -> None:
     client = get_influx_client()
-    query = build_query(measurement, deviceId, start, end)
+    
+    influx_device_id = build_device_tag(device_id)
+    query = build_query(measurement_id, influx_device_id, start, end)
+    
     df = extract_data(client, query)
 
     if df.empty:
-        print(f" Nenhum dado retornado para {measurement} / {deviceId} entre {start} e {end}")
+        print(f"[INFO]Nenhum dado retornado para {measurement_id} / {device_id} entre {start} e {end}")
         return
 
-    df['unit'] = unit
-    
+    df['unit'] = unit    
     df['time'] = pd.to_datetime(df['time'], format='ISO8601', errors='coerce')
     df = df.dropna(subset=['time'])
+    
+    if df.empty:
+        print(
+            f"[INFO] Dados retornados sem coluna de tempo valida para "
+            f"{measurement_id} / {influx_device_id}"
+        )
+        return    
     
     # Adicionando colunas auxiliares para particionamento
     df['year'] = df['time'].dt.year
     df['month'] = df['time'].dt.month
 
-    for (year, month), group_df in df.groupby(['year', 'month']):
-        safe_device_id = sanitize_device_id(deviceId)
-        dir_path = f"data/raw/{measurement}/{safe_device_id}/year={year}/month={month:02d}/"
+    safe_device_id = sanitize_device_id(device_id)
+
+    for (year, month), group_df in df.groupby(['year', 'month']):        
+        dir_path = (f"data/raw/{measurement_id}/{safe_device_id}/year={year}/month={month:02d}/")
+        
         os.makedirs(dir_path, exist_ok=True)
 
-        file_name = f"{measurement}_{safe_device_id}_{year}{month:02d}.{fmt}"
+        file_name = f"{measurement_id}_{safe_device_id}_{year}{month:02d}.{fmt}"
         file_path = os.path.join(dir_path, file_name)
         
+        output_df = group_df.drop(columns=['year', 'month'])
+
         if fmt == "parquet":
-            save_to_parquet(group_df.drop(columns=['year', 'month']), file_path)
+            save_to_parquet(output_df, file_path)
         elif fmt == "csv":
-            save_to_csv(group_df.drop(columns=['year', 'month']), file_path)
+            save_to_csv(output_df, file_path)
         else:
             raise ValueError(f"Formato não suportado: {fmt}")
 
-        print(f" {measurement}/{deviceId} ({year}-{month:02d}): {len(group_df)} registros salvos em {file_path}")
+        print(f" {measurement_id}/{device_id} ({year}-{month:02d}): {len(group_df)} registros salvos em {file_path}")
 
+def run_from_extraction_plan(path: str = EXTRACTION_PLAN_PATH) -> None:
+    df = read_csv_flexible(path)
+    validate_plan(df)
 
-def run_from_control(csv_path="data/exports/time_bounds.csv"):
-    df = pd.read_csv(csv_path, parse_dates=["time_min", "time_max"])
+    df["active"] = df["active"].apply(normalize_bool)
+    df = df[df['active']].copy()
     
-    for _, row in df.iterrows():
-        measurement = row["measurement"]
-        deviceId = row["deviceId"]
-        unit = str(row["unit"])
-        start =  pd.to_datetime(row["time_min"]).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
-        end = pd.to_datetime(row["time_max"]).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        #print(f"Measurement: {measurement}, DeviceId: {deviceId}, Unit: {unit}, Start: {start}, End: {end}")
-
+    if df.empty:
+        print(f"[INFO] O plano de extração está vazio: {path}")
+        return
+    
+    for idx, row in df.iterrows():
         try:
-            run_pipeline(
-            measurement=measurement,
-            deviceId=deviceId,
-            unit=unit,
-            start=start,
-            end=end,
-            fmt="csv",
-            output_path=None  
-            )
-        except Exception as e:
-            print(f" Erro ao executar o pipeline: {e}")
-            sys.exit(1)
+            measurement_id = row['measurement_id'].strip()
+            device_id = row['device_id'].strip()
+            unit = "" if pd.isna(row['unit']) else str(row['unit']).strip()
+            start = str(row['time_min']).strip()
+            end = str(row['time_max']).strip()
+            fmt = str(row['output_format']).strip().lower() if not pd.isna(row['output_format']) else "csv"
 
+            print(
+                f"[RUN] Linha {idx + 1}: "
+                f"measurement_id={measurement_id}, "
+                f"device_id={device_id}, "
+                f"start={start}, end={end}, fmt={fmt}"
+            )
+
+            run_pipeline(
+                measurement_id=measurement_id,
+                device_id=device_id,
+                unit=unit,
+                start=start,
+                end=end,
+                fmt=fmt,
+            )
+
+        except Exception as e:
+            print(f"[ERRO] Falha na linha {idx + 1}: {e}")
+            sys.exit(1)
+            
 if __name__ == "__main__":
-    run_from_control()
+    run_from_extraction_plan()
 
