@@ -56,6 +56,11 @@ def validate_plan(df: pd.DataFrame) -> None:
                          f"\nColunas encontradas: {sorted(df.columns)}"
                          )
 def build_device_tag(device_id: str) -> str:
+
+    """
+        Converte o device_id interno para o formato esperado pela tag 'deviceId' no Influx.
+        Se o device_id já estiver no formato completo (começando com "https://react2020.eu/device/"), retorna como está.
+    """
     device_id = str(device_id).strip()
     
     if device_id.startswith("https://react2020.eu/device/"):
@@ -67,8 +72,8 @@ def build_device_tag(device_id: str) -> str:
 def run_pipeline(measurement_id: str, device_id: str, unit: str, start: str, end: str, fmt: str = "csv") -> None:
     client = get_influx_client()
     
-    influx_device_id = build_device_tag(device_id)
-    query = build_query(measurement_id, influx_device_id, start, end)
+    device_tag = build_device_tag(device_id)
+    query = build_query(measurement_id, device_tag, start, end)
     
     df = extract_data(client, query)
 
