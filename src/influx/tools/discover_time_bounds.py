@@ -18,6 +18,8 @@ def read_csv_flexible(path: str, nrows: int | None = None) -> pd.DataFrame:
 
     df = pd.read_csv(path, sep=";", nrows=nrows)
 
+    df = df[df["active"] == True]
+
     if "measurement_id" in df.columns:
         return df
 
@@ -45,33 +47,36 @@ def get_time_bounds_from_plan(plan_df: pd.DataFrame, field: str = "value") -> li
 
     # remove duplicidade para não consultar a mesma combinação várias vezes
     plan_df = (
-        plan_df[["measurement_id", "device_id", "unit"]]
+        plan_df[["measurement_id", "device_id","measurement_index", "unit"]]
         .drop_duplicates()
         .reset_index(drop=True)
     )
 
     for _, row in plan_df.iterrows():
-        measurement = str(row["measurement_id"]).strip()
-        device_id_raw = str(row["device_id"]).strip()
-        device_tag = build_device_tag(device_id_raw)
-        #print(measurement)
-        #print(device_id_raw)
+        measurement_id = str(row["measurement_id"]).strip()
+        device_id = str(row["device_id"]).strip()
+        device_tag = build_device_tag(device_id)
+        measurement_index = str(row["measurement_index"])
+        #print(measurement_id)
+        #print(device_id)
         #print(device_tag)
         unit = "" if pd.isna(row["unit"]) else str(row["unit"]).strip()
 
         query_min = (
             f'SELECT first("{field}") AS first_val '
-            f'FROM "{measurement}" '
-            f'WHERE "deviceId" = \'{device_tag}\''
+            f'FROM "{measurement_id}" '
+            f'WHERE "deviceId" = \'{device_tag}\' '
+            f'AND "measurementIndex" = \'{measurement_index}\''
         )
 
         query_max = (
              f'SELECT last("{field}") AS last_val '
-             f'FROM "{measurement}" '
-             f'WHERE "deviceId" = \'{device_tag}\''
+             f'FROM "{measurement_id}" '
+             f'WHERE "deviceId" = \'{device_tag}\' '
+             f'AND "measurementIndex" = \'{measurement_index}\''
         )
 
-        print(f"[RUN] measurement={measurement} / deviceId={device_tag}")
+        print(f"[RUN] measurement={measurement_id} / deviceId={device_tag} / measurementIndex={measurement_index}")
 
         result_min = client.query(query_min)
         result_max = client.query(query_max)
@@ -80,11 +85,12 @@ def get_time_bounds_from_plan(plan_df: pd.DataFrame, field: str = "value") -> li
         points_max = list(result_max.get_points())
 
         if not points_min or not points_max:
-             print(f"[INFO] Nenhum dado para {measurement} / {device_tag}")
+             print(f"[INFO] Nenhum dado para {measurement_id} / {device_tag} / {measurement_index}. Pulando.")
              rows.append({
-                 "measurement_id": measurement,
-                 "device_id": device_id_raw,
+                 "measurement_id": measurement_id,
+                 "device_id": device_id,
                  "device_tag": device_tag,
+                 "measurement_index": measurement_index,
                  "unit": unit,
                  "time_min": None,
                  "time_max": None
@@ -95,9 +101,10 @@ def get_time_bounds_from_plan(plan_df: pd.DataFrame, field: str = "value") -> li
         time_max = points_max[0].get("time")
 
         rows.append({
-             "measurement_id": measurement,
-             "device_id": device_id_raw,
+             "measurement_id": measurement_id,
+             "device_id": device_id,
              "device_tag": device_tag,
+             "measurement_index": measurement_index,
              "unit": unit,
              "time_min": time_min,
              "time_max": time_max

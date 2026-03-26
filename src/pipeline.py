@@ -48,7 +48,7 @@ def read_csv_flexible(path: str) -> pd.DataFrame:
     )
 
 def validate_plan(df: pd.DataFrame) -> None:
-    expected_columns = {"active", "measurement_id", "device_id", "unit", "time_min", "time_max", "output_format"}
+    expected_columns = {"active", "measurement_id", "device_id", "unit", "measurement_index", "time_min", "time_max", "output_format"}
 
     missing_columns = expected_columns.difference(df.columns)
     if missing_columns:
@@ -56,6 +56,11 @@ def validate_plan(df: pd.DataFrame) -> None:
                          f"\nColunas encontradas: {sorted(df.columns)}"
                          )
 def build_device_tag(device_id: str) -> str:
+
+    """
+        Converte o device_id interno para o formato esperado pela tag 'deviceId' no Influx.
+        Se o device_id já estiver no formato completo (começando com "https://react2020.eu/device/"), retorna como está.
+    """
     device_id = str(device_id).strip()
     
     if device_id.startswith("https://react2020.eu/device/"):
@@ -64,16 +69,16 @@ def build_device_tag(device_id: str) -> str:
     return f"https://react2020.eu/device/{device_id}"
 
 
-def run_pipeline(measurement_id: str, device_id: str, unit: str, start: str, end: str, fmt: str = "csv") -> None:
+def run_pipeline(measurement_id: str, device_id: str, unit: str, measurement_index: str, start: str, end: str, fmt: str = "csv") -> None:
     client = get_influx_client()
     
-    influx_device_id = build_device_tag(device_id)
-    query = build_query(measurement_id, influx_device_id, start, end)
+    device_tag = build_device_tag(device_id)
+    query = build_query(measurement_id, device_tag, measurement_index, start, end)
     
     df = extract_data(client, query)
 
     if df.empty:
-        print(f"[INFO]Nenhum dado retornado para {measurement_id} / {device_id} entre {start} e {end}")
+        print(f"[INFO]Nenhum dado retornado para {measurement_id} / {device_id} / {measurement_index} entre {start} e {end}")
         return
 
     df['unit'] = unit    
@@ -83,7 +88,7 @@ def run_pipeline(measurement_id: str, device_id: str, unit: str, start: str, end
     if df.empty:
         print(
             f"[INFO] Dados retornados sem coluna de tempo valida para "
-            f"{measurement_id} / {influx_device_id}"
+            f"{measurement_id} / {device_tag} / {measurement_index}"
         )
         return    
     
@@ -94,11 +99,11 @@ def run_pipeline(measurement_id: str, device_id: str, unit: str, start: str, end
     safe_device_id = sanitize_device_id(device_id)
 
     for (year, month), group_df in df.groupby(['year', 'month']):        
-        dir_path = (f"data/raw/{measurement_id}/{safe_device_id}/year={year}/month={month:02d}/")
+        dir_path = (f"data/raw/{measurement_id}/{safe_device_id}/{measurement_index}/year={year}/month={month:02d}/")
         
         os.makedirs(dir_path, exist_ok=True)
 
-        file_name = f"{measurement_id}_{safe_device_id}_{year}{month:02d}.{fmt}"
+        file_name = f"{measurement_id}_{safe_device_id}_{measurement_index}_{year}{month:02d}.{fmt}"
         file_path = os.path.join(dir_path, file_name)
         
         output_df = group_df.drop(columns=['year', 'month'])
@@ -110,7 +115,7 @@ def run_pipeline(measurement_id: str, device_id: str, unit: str, start: str, end
         else:
             raise ValueError(f"Formato não suportado: {fmt}")
 
-        print(f" {measurement_id}/{device_id} ({year}-{month:02d}): {len(group_df)} registros salvos em {file_path}")
+        print(f" {measurement_id}/{device_id}/{measurement_index} ({year}-{month:02d}): {len(group_df)} registros salvos em {file_path}")
 
 def run_from_extraction_plan(path: str = EXTRACTION_PLAN_PATH) -> None:
     df = read_csv_flexible(path)
@@ -128,6 +133,7 @@ def run_from_extraction_plan(path: str = EXTRACTION_PLAN_PATH) -> None:
             measurement_id = row['measurement_id'].strip()
             device_id = row['device_id'].strip()
             unit = "" if pd.isna(row['unit']) else str(row['unit']).strip()
+            measurement_index = row['measurement_index']
             start = str(row['time_min']).strip()
             end = str(row['time_max']).strip()
             fmt = str(row['output_format']).strip().lower() if not pd.isna(row['output_format']) else "csv"
@@ -136,6 +142,7 @@ def run_from_extraction_plan(path: str = EXTRACTION_PLAN_PATH) -> None:
                 f"[RUN] Linha {idx + 1}: "
                 f"measurement_id={measurement_id}, "
                 f"device_id={device_id}, "
+                f"measurement_index={measurement_index}, "
                 f"start={start}, end={end}, fmt={fmt}"
             )
 
@@ -143,6 +150,7 @@ def run_from_extraction_plan(path: str = EXTRACTION_PLAN_PATH) -> None:
                 measurement_id=measurement_id,
                 device_id=device_id,
                 unit=unit,
+                measurement_index=measurement_index,
                 start=start,
                 end=end,
                 fmt=fmt,
