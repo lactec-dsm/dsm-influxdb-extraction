@@ -3,7 +3,7 @@ import pandas as pd
 from src.influx.connection import get_influx_client
 
 PLAN_PATH = "data/exports/extraction_plan.csv"
-OUTPUT_PATH = "data/exports/measurement_time_bounds.csv"
+OUTPUT_PATH = "data/exports/measurement_time_bounds_A11_A12_A13_A15_A18.csv"
 
 
 def read_csv_flexible(path: str, nrows: int | None = None) -> pd.DataFrame:
