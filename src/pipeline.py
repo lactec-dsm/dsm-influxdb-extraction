@@ -69,7 +69,7 @@ def build_device_tag(device_id: str) -> str:
     return f"https://react2020.eu/device/{device_id}"
 
 
-def run_pipeline(measurement_id: str, device_id: str, unit: str, measurement_index: str, start: str, end: str, fmt: str = "csv") -> None:
+def run_pipeline(measurement_id: str, device_id: str, unit: str, measurement_index: str, Location_facility_id: str, start: str, end: str, fmt: str = "csv") -> None:
     client = get_influx_client()
     
     device_tag = build_device_tag(device_id)
@@ -78,17 +78,18 @@ def run_pipeline(measurement_id: str, device_id: str, unit: str, measurement_ind
     df = extract_data(client, query)
 
     if df.empty:
-        print(f"[INFO]Nenhum dado retornado para {measurement_id} / {device_id} / {measurement_index} entre {start} e {end}")
+        print(f"[INFO]Nenhum dado retornado para {measurement_id} / {device_id} / {measurement_index} / {Location_facility_id} entre {start} e {end}")
         return
 
-    df['unit'] = unit    
+    df['unit'] = unit  
+    df[Location_facility_id] = Location_facility_id
     df['time'] = pd.to_datetime(df['time'], format='ISO8601', errors='coerce')
     df = df.dropna(subset=['time'])
     
     if df.empty:
         print(
             f"[INFO] Dados retornados sem coluna de tempo valida para "
-            f"{measurement_id} / {device_tag} / {measurement_index}"
+            f"{measurement_id} / {device_tag} / {measurement_index} / {Location_facility_id}"
         )
         return    
     
@@ -99,11 +100,11 @@ def run_pipeline(measurement_id: str, device_id: str, unit: str, measurement_ind
     safe_device_id = sanitize_device_id(device_id)
 
     for (year, month), group_df in df.groupby(['year', 'month']):        
-        dir_path = (f"data/raw/{measurement_id}/{safe_device_id}/{measurement_index}/year={year}/month={month:02d}/")
+        dir_path = (f"data/raw/{measurement_id}/{safe_device_id}/{measurement_index}/{Location_facility_id}/year={year}/month={month:02d}/")
         
         os.makedirs(dir_path, exist_ok=True)
 
-        file_name = f"{measurement_id}_{safe_device_id}_{measurement_index}_{year}{month:02d}.{fmt}"
+        file_name = f"{measurement_id}_{safe_device_id}_{measurement_index}_{Location_facility_id}_{year}{month:02d}.{fmt}"
         file_path = os.path.join(dir_path, file_name)
         
         output_df = group_df.drop(columns=['year', 'month'])
@@ -134,6 +135,7 @@ def run_from_extraction_plan(path: str = EXTRACTION_PLAN_PATH) -> None:
             device_id = row['device_id'].strip()
             unit = "" if pd.isna(row['unit']) else str(row['unit']).strip()
             measurement_index = row['measurement_index']
+            Location_facility_id = row['Location_facility_id'] if not pd.isna(row['Location_facility_id']) else ""
             start = str(row['time_min']).strip()
             end = str(row['time_max']).strip()
             fmt = str(row['output_format']).strip().lower() if not pd.isna(row['output_format']) else "csv"
@@ -143,6 +145,7 @@ def run_from_extraction_plan(path: str = EXTRACTION_PLAN_PATH) -> None:
                 f"measurement_id={measurement_id}, "
                 f"device_id={device_id}, "
                 f"measurement_index={measurement_index}, "
+                f"Location_facility_id={Location_facility_id}, "
                 f"start={start}, end={end}, fmt={fmt}"
             )
 
@@ -151,6 +154,7 @@ def run_from_extraction_plan(path: str = EXTRACTION_PLAN_PATH) -> None:
                 device_id=device_id,
                 unit=unit,
                 measurement_index=measurement_index,
+                Location_facility_id=Location_facility_id,
                 start=start,
                 end=end,
                 fmt=fmt,
